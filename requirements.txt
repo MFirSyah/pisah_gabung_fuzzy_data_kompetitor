@@ -1,7 +1,6 @@
 streamlit
 pandas
-thefuzz
-python-Levenshtein
-plotly
+thefuzz[speedup]
 gspread
 google-auth-oauthlib
+openpyxl
