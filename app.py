@@ -1,10 +1,9 @@
 # =============================================================================
-# APLIKASI STREAMLIT UNTUK ANALISIS DATA KOMPETITOR
+# APLIKASI STREAMLIT UNTUK ANALISIS DATA KOMPETITOR (VERSI ADAPTASI)
 # =============================================================================
 # Deskripsi:
-# Aplikasi ini mengambil data mentah dari Google Sheets, membersihkannya,
-# melakukan standardisasi nama produk dan kategori menggunakan fuzzy matching,
-# lalu menyajikan hasilnya untuk diunduh.
+# Menggunakan metode pengambilan data yang diadaptasi dari skrip referensi
+# untuk menggabungkan, membersihkan, dan mengayakan data dari Google Sheets.
 # =============================================================================
 
 # --- Import Library ---
@@ -22,21 +21,20 @@ st.set_page_config(layout="wide", page_title="Dashboard Analisis Data")
 
 st.title("🚀 Aplikasi Analisis Data Kompetitor")
 st.markdown("""
-Aplikasi ini dirancang untuk mengotomatisasi proses pembersihan dan pengayaan data penjualan dari berbagai toko yang tersimpan di Google Sheets. 
-Prosesnya meliputi penggabungan data, standardisasi nama produk, dan penambahan kategori secara otomatis.
+Aplikasi ini mengambil data mentah dari Google Sheets, membersihkannya, dan melakukan standardisasi nama produk serta kategori secara otomatis.
+Gunakan tombol di bawah untuk memulai proses.
 """)
 
 # =============================================================================
 # FUNGSI-FUNGSI UTAMA
 # =============================================================================
 
-# --- Fungsi untuk Mengunduh Data dari Google Sheets ---
-# Menggunakan cache agar tidak perlu mengunduh data berulang kali jika tidak ada perubahan
+# --- Fungsi Mengunduh Data dari Google Sheets (METODE ADAPTASI) ---
 @st.cache_data(ttl=600, show_spinner="Menghubungkan ke Google Sheets dan mengambil data...")
-def load_data_from_gsheets():
+def load_data_from_gsheets_adapted():
     """
-    Menghubungkan ke Google API, membuka Spreadsheet, dan membaca semua sheet
-    yang relevan menjadi DataFrame.
+    Menghubungkan ke Google API dan membaca SEMUA sheet dalam satu kali proses,
+    lalu memisahkannya menjadi data rekap dan database master.
     """
     try:
         # Menggunakan st.secrets untuk autentikasi yang aman
@@ -50,41 +48,40 @@ def load_data_from_gsheets():
         workbook = client.open_by_url(spreadsheet_url)
         
         sheets = workbook.worksheets()
-        all_data_list = []
-        db_master_df = None
-        
-        # Memisahkan sheet rekap dan sheet database
-        rekap_sheets = [s for s in sheets if "REKAP" in s.title]
-        database_sheet = next((s for s in sheets if "DATABASE" in s.title), None)
+        all_dfs = {}
+        for sheet in sheets:
+            data = sheet.get_all_records()
+            all_dfs[sheet.title] = pd.DataFrame(data)
 
-        if not rekap_sheets:
-            st.error("Tidak ada sheet dengan nama 'REKAP' yang ditemukan di Google Sheets.")
+        # Memisahkan data rekap dan database dari dictionary yang sudah dibuat
+        rekap_dfs = []
+        db_master_df = None
+
+        for sheet_name, df in all_dfs.items():
+            if "REKAP" in sheet_name:
+                parts = sheet_name.split(' - REKAP - ')
+                if len(parts) == 2:
+                    df['Toko'] = parts[0].strip()
+                    df['Status'] = 'Ready' if parts[1].strip().startswith('RE') else 'Habis'
+                    rekap_dfs.append(df)
+            elif "DATABASE" in sheet_name and "BRAND" not in sheet_name:
+                db_master_df = df
+
+        if not rekap_dfs:
+            st.error("Tidak ada sheet dengan nama 'REKAP' yang ditemukan.")
             return None, None
             
-        if not database_sheet:
+        if db_master_df is None:
             st.error("Sheet 'DATABASE' tidak ditemukan. Sheet ini wajib ada sebagai kamus.")
             return None, None
 
-        # Membaca semua sheet rekap
-        for sheet in rekap_sheets:
-            data = sheet.get_all_records()
-            df = pd.DataFrame(data)
-            
-            # Menambahkan informasi Toko dan Status dari judul sheet
-            parts = sheet.title.split(' - REKAP - ')
-            df['Toko'] = parts[0].strip()
-            df['Status'] = 'Ready' if parts[1].strip().startswith('RE') else 'Habis'
-            all_data_list.append(df)
-            
-        # Membaca sheet database
-        db_master_df = pd.DataFrame(database_sheet.get_all_records())
+        combined_df = pd.concat(rekap_dfs, ignore_index=True)
         db_master_df.drop_duplicates(subset=['NAMA'], inplace=True)
         
-        combined_df = pd.concat(all_data_list, ignore_index=True)
         return combined_df, db_master_df
 
     except Exception as e:
-        st.error(f"Gagal terhubung atau membaca data dari Google Sheets. Pastikan Anda sudah mengatur `secrets.toml` dengan benar.")
+        st.error(f"Gagal terhubung atau membaca data dari Google Sheets. Pastikan Anda sudah mengatur `secrets.toml`.")
         st.error(f"Detail error: {e}")
         return None, None
 
@@ -94,11 +91,15 @@ def process_data(df, db_master):
     Melakukan fuzzy matching untuk standardisasi nama produk dan kategorisasi.
     """
     with st.spinner("Melakukan standardisasi nama produk dan kategori (fuzzy matching)..."):
+        # Membersihkan kolom 'NAMA' dari nilai non-string
+        df['NAMA'] = df['NAMA'].astype(str)
+        db_master['NAMA'] = db_master['NAMA'].astype(str)
+
         master_product_list = db_master['NAMA'].tolist()
         master_category_map = pd.Series(db_master.Kategori.values, index=db_master.NAMA).to_dict()
 
         def find_master_data(product_name):
-            if not isinstance(product_name, str) or not product_name:
+            if not product_name:
                 return product_name, 'Lain-lain'
             
             best_match, score = process.extractOne(product_name, master_product_list)
@@ -112,10 +113,10 @@ def process_data(df, db_master):
         match_results = df['NAMA'].apply(find_master_data).apply(pd.Series)
         match_results.columns = ['Nama Produk Master', 'Kategori']
         
-        processed_df = pd.concat([df, match_results], axis=1)
+        processed_df = pd.concat([df.reset_index(drop=True), match_results.reset_index(drop=True)], axis=1)
 
     with st.spinner("Menambahkan kolom waktu dan finalisasi..."):
-        # Konversi kolom numerik
+        # Konversi kolom numerik, mengatasi nilai kosong atau non-numerik
         for col in ['HARGA', 'TERJUAL/BLN']:
             processed_df[col] = pd.to_numeric(processed_df[col], errors='coerce').fillna(0)
 
@@ -140,15 +141,16 @@ def process_data(df, db_master):
 # TAMPILAN APLIKASI
 # =============================================================================
 
+# Menggunakan session_state untuk menyimpan data yang sudah diproses
 if 'processed_data' not in st.session_state:
     st.session_state.processed_data = None
 
 # Tombol untuk memulai proses
-if st.button("🚀 Mulai Proses Analisis", type="primary"):
-    data_mentah, db_master = load_data_from_gsheets()
+if st.button("🚀 Mulai Proses & Ambil Data", type="primary"):
+    data_mentah, db_master = load_data_from_gsheets_adapted()
     
     if data_mentah is not None and db_master is not None:
-        st.success(f"Berhasil memuat {len(data_mentah)} baris data mentah.")
+        st.success(f"Berhasil memuat {len(data_mentah)} baris data mentah dari semua sheet rekap.")
         final_data = process_data(data_mentah, db_master)
         st.session_state.processed_data = final_data
         st.success("🎉 Semua data berhasil diproses!")
@@ -164,7 +166,6 @@ if st.session_state.processed_data is not None:
     st.info(f"Total baris data setelah dibersihkan: **{len(final_df)}**")
 
     # --- Fitur Download ---
-    # Mengonversi DataFrame ke CSV di dalam memori
     @st.cache_data
     def convert_df_to_csv(df):
         return df.to_csv(index=False).encode('utf-8')
