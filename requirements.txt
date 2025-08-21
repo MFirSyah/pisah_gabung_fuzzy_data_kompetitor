@@ -1,0 +1,7 @@
+streamlit
+pandas
+thefuzz
+python-Levenshtein
+plotly
+gspread
+google-auth-oauthlib
