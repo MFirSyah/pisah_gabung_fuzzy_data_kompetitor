@@ -1,0 +1,1 @@
+# pisah_gabung_fuzzy_data_kompetitor
