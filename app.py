@@ -26,34 +26,50 @@ def get_gspread_client():
     )
     return gspread.authorize(creds)
 
-# --- Fungsi untuk Memuat SEMUA Data Referensi ---
-@st.cache_data(show_spinner="Memuat data referensi dari Google Sheets...")
-def load_reference_data(_client):
+# --- FUNGSI BARU: Menggabungkan Pemuatan & Pemrosesan Awal (Lebih Efisien) ---
+@st.cache_data(show_spinner="Menghubungi Google Sheets dan memuat semua data...")
+def load_and_prepare_data(_client):
+    """
+    Satu fungsi untuk menangani semua koneksi dan pembacaan data.
+    Fungsi ini di-cache dan hanya mengembalikan DataFrame.
+    """
     try:
         source_spreadsheet = _client.open_by_url(SOURCE_SHEET_URL)
+        
+        # 1. Muat semua data referensi
         db_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE").get_all_records())
         db_brand_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE_BRAND").get_all_records())
         kamus_df = pd.DataFrame(source_spreadsheet.worksheet("kamus_brand").get_all_records())
 
-        # Memastikan stabilitas data referensi
-        db_df.dropna(subset=['NAMA'], inplace=True)
-        if 'Brand' not in db_df.columns: db_df['Brand'] = None
-        if 'Kategori' not in db_df.columns: db_df['Kategori'] = None
-
-        all_brands_list = []
-        if not db_brand_df.empty:
-            all_brands_list = db_brand_df.iloc[:, 0].dropna().str.strip().unique().tolist()
+        # 2. Muat dan gabungkan semua data toko
+        all_sheets = source_spreadsheet.worksheets()
+        exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand", "DB KLIK - REKAP - READY", "DB KLIK - REKAP - HABIS"]
+        df_list = []
         
-        kamus_dict = {}
-        if not kamus_df.empty:
-            kamus_dict = dict(zip(kamus_df['Alias'], kamus_df['Brand_Utama']))
+        for sheet in all_sheets:
+            if sheet.title not in exclude_sheets:
+                data = sheet.get_all_records()
+                if not data: continue
+                
+                df = pd.DataFrame(data)
+                parts = sheet.title.split(' - REKAP - ')
+                df['Toko'] = parts[0].strip() if len(parts) == 2 else sheet.title
+                df['Status'] = parts[1].strip() if len(parts) == 2 else 'Unknown'
+                df_list.append(df)
 
-        return db_df, all_brands_list, kamus_dict, source_spreadsheet
+        if not df_list:
+            st.warning("Tidak ada data toko yang ditemukan untuk diproses.")
+            return None, None, None, None
+            
+        combined_df = pd.concat(df_list, ignore_index=True)
+        
+        return combined_df, db_df, db_brand_df, kamus_df
+        
     except Exception as e:
-        st.error(f"Gagal memuat data referensi: {e}")
+        st.error(f"Gagal memuat data dari Google Sheets: {e}")
         return None, None, None, None
 
-# --- FUNGSI DETEKSI CANGGIHAN (PERBAIKAN UNPACK) ---
+# --- FUNGSI DETEKSI CANGGIHAN (TIDAK PERLU DIUBAH) ---
 def find_best_match(product_name, db_df, all_brands_list):
     if not isinstance(product_name, str) or not product_name.strip():
         return None, None
@@ -69,9 +85,7 @@ def find_best_match(product_name, db_df, all_brands_list):
     choices = db_df['NAMA'].dropna().str.lower()
     if not choices.empty:
         result = process.extractOne(product_name_lower, choices, scorer=fuzz.token_sort_ratio)
-
         if result is not None:
-            # result biasanya (string, score, index) → ambil string & score saja
             match, score = result[0], result[1]
             if score >= 90:
                 matched_row = db_df[db_df['NAMA'].str.lower() == match]
@@ -84,68 +98,6 @@ def find_best_match(product_name, db_df, all_brands_list):
             return brand.upper(), None
 
     return None, None
-
-# --- FUNGSI UTAMA UNTUK MEMPROSES DATA ---
-def process_data(source_spreadsheet, db_df, all_brands_list, kamus_dict):
-    all_sheets = source_spreadsheet.worksheets()
-    exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand", "DB KLIK - REKAP - READY", "DB KLIK - REKAP - HABIS"]
-    df_list = []
-
-    # Progress bar & log status
-    progress = st.progress(0)
-    status_text = st.empty()
-
-    sheets_to_process = [s for s in all_sheets if s.title not in exclude_sheets]
-    total = len(sheets_to_process)
-
-    for i, sheet in enumerate(sheets_to_process, start=1):
-        status_text.text(f"[{i}/{total}] Memproses sheet: {sheet.title}...")
-        data = sheet.get_all_records()
-        if not data:
-            progress.progress(i/total)
-            continue
-
-        df = pd.DataFrame(data)
-        parts = sheet.title.split(' - REKAP - ')
-        df['Toko'] = parts[0].strip() if len(parts) == 2 else sheet.title
-        df['Status'] = parts[1].strip() if len(parts) == 2 else 'Unknown'
-        df_list.append(df)
-
-        # update progress bar
-        progress.progress(i/total)
-
-    # selesai
-    progress.empty()
-    status_text.text("✅ Semua sheet berhasil diproses!")
-
-    if not df_list:
-        st.warning("Tidak ada data toko yang ditemukan untuk diproses.")
-        return pd.DataFrame(), pd.DataFrame()
-
-    combined_df = pd.concat(df_list, ignore_index=True)
-
-    # LANGKAH 1: Pembersihan Awal dengan kamus_brand
-    if kamus_dict:
-        combined_df['BRAND_CLEANED'] = combined_df.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip().replace(kamus_dict)
-    else:
-        combined_df['BRAND_CLEANED'] = combined_df.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip()
-
-    # LANGKAH 2 & 3: Terapkan metode deteksi canggih
-    results = combined_df.apply(
-        lambda row: find_best_match(row.get('NAMA', ''), db_df, all_brands_list),
-        axis=1,
-        result_type='expand'
-    )
-    
-    # Gabungkan semua hasil
-    combined_df['BRAND_HASIL'] = results[0].fillna(combined_df['BRAND_CLEANED'])
-    combined_df['KATEGORI_HASIL'] = results[1]
-
-    # Finalisasi
-    all_data_final = combined_df.copy()
-    missing_data = all_data_final[all_data_final['BRAND_HASIL'].isna() | all_data_final['KATEGORI_HASIL'].isna()].copy()
-    
-    return all_data_final, missing_data
 
 # --- Fungsi untuk Menulis Data ke Google Sheet ---
 def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
@@ -167,27 +119,52 @@ def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
 # --- Tampilan Aplikasi Streamlit ---
 st.set_page_config(page_title="Automasi Pelabelan Brand Produk", layout="wide")
 st.title("🚀 Automasi Pelabelan Brand dan Kategori Produk")
-st.info("""
-Aplikasi ini menggunakan metode pelabelan berlapis (Kamus -> Direct -> Fuzzy -> Keyword) untuk hasil maksimal.
-""")
+st.info("Aplikasi ini menggunakan metode pelabelan berlapis (Kamus -> Direct -> Fuzzy -> Keyword) untuk hasil maksimal.")
 
 if st.button("Mulai Proses Pelabelan", type="primary"):
-    with st.spinner("Menghubungi Google Sheets..."):
-        client = get_gspread_client()
-        
-        st.header("1. Memuat Data Referensi")
-        db_df, all_brands_list, kamus_dict, source_spreadsheet = load_reference_data(client)
+    client = get_gspread_client()
+    
+    # Panggil fungsi baru yang sudah di-cache
+    combined_df, db_df, db_brand_df, kamus_df = load_and_prepare_data(client)
 
-        if source_spreadsheet is not None:
-            st.success("Berhasil memuat data referensi (DATABASE, DATABASE_BRAND, kamus_brand).")
-
-            st.header("2. Memproses Data Toko")
-            all_processed_data, missing_info_df = process_data(source_spreadsheet, db_df, all_brands_list, kamus_dict)
+    if combined_df is not None:
+        with st.spinner("Data berhasil dimuat. Melakukan pelabelan canggih..."):
             
-            st.success(f"Pemrosesan selesai. Total {len(all_processed_data)} baris data diproses.")
+            # --- Persiapan data referensi (dilakukan di luar cache) ---
+            db_df.dropna(subset=['NAMA'], inplace=True)
+            if 'Brand' not in db_df.columns: db_df['Brand'] = None
+            if 'Kategori' not in db_df.columns: db_df['Kategori'] = None
+
+            all_brands_list = []
+            if not db_brand_df.empty:
+                all_brands_list = db_brand_df.iloc[:, 0].dropna().str.strip().unique().tolist()
+            
+            kamus_dict = {}
+            if not kamus_df.empty:
+                kamus_dict = dict(zip(kamus_df['Alias'], kamus_df['Brand_Utama']))
+            
+            # --- Proses Pelabelan ---
+            if kamus_dict:
+                combined_df['BRAND_CLEANED'] = combined_df.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip().replace(kamus_dict)
+            else:
+                combined_df['BRAND_CLEANED'] = combined_df.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip()
+            
+            results = combined_df.apply(
+                lambda row: find_best_match(row.get('NAMA', ''), db_df, all_brands_list),
+                axis=1,
+                result_type='expand'
+            )
+            
+            combined_df['BRAND_HASIL'] = results[0].fillna(combined_df['BRAND_CLEANED'])
+            combined_df['KATEGORI_HASIL'] = results[1]
+
+            all_processed_data = combined_df.copy()
+            missing_info_df = all_processed_data[all_processed_data['BRAND_HASIL'].isna() | all_processed_data['KATEGORI_HASIL'].isna()].copy()
+
+            st.success(f"Pelabelan selesai. Total {len(all_processed_data)} baris data diproses.")
             st.warning(f"Ditemukan {len(missing_info_df)} produk yang memerlukan pemeriksaan manual.")
 
-            st.header("3. Menulis Hasil ke Google Sheets")
+            st.header("Menulis Hasil ke Google Sheets")
             
             if not all_processed_data.empty:
                 cols_to_keep = ['TANGGAL', 'NAMA', 'HARGA', 'TERJUAL/BLN', 'BRAND', 'Toko', 'Status', 'BRAND_HASIL', 'KATEGORI_HASIL']
