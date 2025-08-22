@@ -35,7 +35,7 @@ def load_reference_data(_client):
         db_brand_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE_BRAND").get_all_records())
         kamus_df = pd.DataFrame(source_spreadsheet.worksheet("kamus_brand").get_all_records())
 
-        # --- PERBAIKAN STABILITAS ---
+        # Memastikan stabilitas data referensi
         db_df.dropna(subset=['NAMA'], inplace=True)
         if 'Brand' not in db_df.columns: db_df['Brand'] = None
         if 'Kategori' not in db_df.columns: db_df['Kategori'] = None
@@ -53,7 +53,7 @@ def load_reference_data(_client):
         st.error(f"Gagal memuat data referensi: {e}")
         return None, None, None, None
 
-# --- FUNGSI DETEKSI CANGGIHAN YANG DICANGKOKKAN ---
+# --- FUNGSI DETEKSI CANGGIHAN DENGAN PERBAIKAN ERROR ---
 def find_best_match(product_name, db_df, all_brands_list):
     if not isinstance(product_name, str) or not product_name.strip():
         return None, None
@@ -68,8 +68,11 @@ def find_best_match(product_name, db_df, all_brands_list):
     # Langkah 2: Fuzzy Match (dengan pengaman error)
     choices = db_df['NAMA'].dropna().str.lower()
     if not choices.empty:
-        # Periksa apakah 'choices' tidak kosong sebelum memanggil extractOne
+        # **PERBAIKAN UTAMA DI SINI**
+        # Panggil extractOne dan simpan hasilnya di satu variabel dulu.
         result = process.extractOne(product_name_lower, choices, scorer=fuzz.token_sort_ratio)
+        
+        # Hanya bongkar (unpack) jika hasilnya tidak None.
         if result:
             match, score = result
             if score >= 90:
@@ -84,7 +87,7 @@ def find_best_match(product_name, db_df, all_brands_list):
 
     return None, None
 
-# --- FUNGSI UTAMA UNTUK MEMPROSES DATA (SUDAH DIUPGRADE) ---
+# --- FUNGSI UTAMA UNTUK MEMPROSES DATA ---
 def process_data(source_spreadsheet, db_df, all_brands_list, kamus_dict):
     all_sheets = source_spreadsheet.worksheets()
     exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand", "DB KLIK - REKAP - READY", "DB KLIK - REKAP - HABIS"]
@@ -110,9 +113,9 @@ def process_data(source_spreadsheet, db_df, all_brands_list, kamus_dict):
 
     # LANGKAH 1: Pembersihan Awal dengan kamus_brand
     if kamus_dict:
-        combined_df['BRAND_CLEANED'] = combined_df['BRAND'].astype(str).str.strip().replace(kamus_dict)
+        combined_df['BRAND_CLEANED'] = combined_df.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip().replace(kamus_dict)
     else:
-        combined_df['BRAND_CLEANED'] = combined_df['BRAND'].astype(str).str.strip()
+        combined_df['BRAND_CLEANED'] = combined_df.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip()
 
     # LANGKAH 2 & 3: Terapkan metode deteksi canggih
     results = combined_df.apply(
