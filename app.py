@@ -53,7 +53,7 @@ def load_reference_data(_client):
         st.error(f"Gagal memuat data referensi: {e}")
         return None, None, None, None
 
-# --- FUNGSI DETEKSI CANGGIHAN DENGAN PERBAIKAN ERROR ---
+# --- FUNGSI DETEKSI CANGGIHAN (PERBAIKAN UNPACK) ---
 def find_best_match(product_name, db_df, all_brands_list):
     if not isinstance(product_name, str) or not product_name.strip():
         return None, None
@@ -65,18 +65,14 @@ def find_best_match(product_name, db_df, all_brands_list):
     if not direct_match.empty:
         return direct_match.iloc[0]['Brand'], direct_match.iloc[0]['Kategori']
 
-    # Langkah 2: Fuzzy Match (dengan pengaman error)
+    # Langkah 2: Fuzzy Match
     choices = db_df['NAMA'].dropna().str.lower()
     if not choices.empty:
-        # **====================================================================**
-        # ** PERBAIKAN UTAMA PENYEBAB ERROR                     **
-        # **====================================================================**
-        # Panggil extractOne dan simpan hasilnya di satu variabel dulu.
         result = process.extractOne(product_name_lower, choices, scorer=fuzz.token_sort_ratio)
-        
-        # Hanya bongkar (unpack) jika hasilnya TIDAK None.
+
         if result is not None:
-            match, score = result
+            # result biasanya (string, score, index) → ambil string & score saja
+            match, score = result[0], result[1]
             if score >= 90:
                 matched_row = db_df[db_df['NAMA'].str.lower() == match]
                 if not matched_row.empty:
@@ -126,11 +122,11 @@ def process_data(source_spreadsheet, db_df, all_brands_list, kamus_dict):
         result_type='expand'
     )
     
-    # Gabungkan semua hasil dengan logika berlapis
+    # Gabungkan semua hasil
     combined_df['BRAND_HASIL'] = results[0].fillna(combined_df['BRAND_CLEANED'])
     combined_df['KATEGORI_HASIL'] = results[1]
 
-    # Finalisasi dan pemisahan data
+    # Finalisasi
     all_data_final = combined_df.copy()
     missing_data = all_data_final[all_data_final['BRAND_HASIL'].isna() | all_data_final['KATEGORI_HASIL'].isna()].copy()
     
@@ -167,7 +163,7 @@ if st.button("Mulai Proses Pelabelan", type="primary"):
         st.header("1. Memuat Data Referensi")
         db_df, all_brands_list, kamus_dict, source_spreadsheet = load_reference_data(client)
 
-        if source_spreadsheet:
+        if source_spreadsheet is not None:
             st.success("Berhasil memuat data referensi (DATABASE, DATABASE_BRAND, kamus_brand).")
 
             st.header("2. Memproses Data Toko")
