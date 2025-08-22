@@ -27,7 +27,7 @@ STORE_SHEET_NAMES = [
     'MULTIFUNGSI - REKAP - READY', 'MULTIFUNGSI - REKAP - HABIS',
     'TECH ISLAND - REKAP - READY', 'TECH ISLAND - REKAP - HABIS',
     'GG STORE - REKAP - READY', 'GG STORE - REKAP - HABIS',
-    'SURYA MITRA ONLINE - REKAP - READY', 'SURYA MITRA ONLINE - REKAP - HABIS'
+    'SURYA MITRA ONLINE - REKAP - RE', 'SURYA MITRA ONLINE - REKAP - HA'
 ]
 
 # --- FUNGSI-FUNGSI UTAMA ---
@@ -78,7 +78,6 @@ def load_mapping_data(_spreadsheet_obj):
         return None, None, None, None
 
 def find_brand_and_category(row, db_map, category_map, pattern, cased_map):
-    """Fungsi cerdas untuk mencari brand dan kategori. Mengembalikan None jika tidak ketemu."""
     product_name_lower = str(row['NAMA']).lower()
     if row['Toko'] == 'DB KLIK' and product_name_lower in db_map: return db_map[product_name_lower]
     match = re.search(pattern, product_name_lower)
@@ -91,7 +90,6 @@ def find_brand_and_category(row, db_map, category_map, pattern, cased_map):
     return None, None
 
 def process_all_data(_spreadsheet_obj, progress_bar):
-    """Membaca semua sheet toko dari Google Sheet, menggabungkan, dan melabeli ulang."""
     all_dfs = []
     db_map, category_map, pattern, cased_map = load_mapping_data(_spreadsheet_obj)
     if pattern is None: return None, None
@@ -134,7 +132,6 @@ def process_all_data(_spreadsheet_obj, progress_bar):
 
 
 def link_similar_products(df, threshold=0.85):
-    """Fungsi fuzzy matching yang TIDAK MENGUBAH KOLOM 'NAMA' ASLI."""
     st.info(f"Memulai Fuzzy Matching untuk {len(df):,} produk...")
     stop_words = ['original', 'garansi', 'resmi', 'murah', 'promo', 'bonus', 'free', 'laptop', 'mouse', 'keyboard', 'gaming', 'headset']
     def clean_text(text):
@@ -192,27 +189,31 @@ if st.button("PROSES SEMUA DATA DARI GOOGLE SHEET", type="primary"):
                     processed_df = link_similar_products(processed_df, threshold=similarity_threshold)
                 
                 df_to_save = processed_df.drop(columns=['NAMA_CLEAN'], errors='ignore')
-
-                # --- FIX UNTUK ERROR 'inf' ---
-                # Mengganti nilai 'infinity' (inf) yang tidak valid dengan nilai kosong (NaN)
-                # Baris ini penting untuk mencegah error saat menulis ke Google Sheets
                 df_to_save.replace([np.inf, -np.inf], np.nan, inplace=True)
-                # -----------------------------
 
+                # --- PERUBAHAN DI SINI ---
+                # Ganti semua nilai NaN (kosong) menjadi string kosong ''
+                # Ini adalah cara yang kompatibel untuk versi library yang lebih lama.
+                df_to_save = df_to_save.fillna('')
+                
                 with st.spinner(f"Menulis {len(df_to_save):,} baris ke 'DATA_LOOKER'..."):
                     sh_looker = gspread_client.open_by_key(SHEET_ID_DATA_LOOKER)
                     worksheet_looker = sh_looker.sheet1
                     worksheet_looker.clear()
-                    set_with_dataframe(worksheet_looker, df_to_save, nan_as_empty_string=True)
+                    # Argumen 'nan_as_empty_string' dihapus
+                    set_with_dataframe(worksheet_looker, df_to_save)
                 st.success("Data utama berhasil ditulis ke 'DATA_LOOKER'!")
 
                 with st.spinner(f"Menulis {len(no_brand_df):,} baris ke 'TIDAK_ADA_BRAND'..."):
-                    # Lakukan juga pembersihan nilai 'inf' untuk sheet ini
+                    # Terapkan perbaikan yang sama untuk sheet ini
                     no_brand_df.replace([np.inf, -np.inf], np.nan, inplace=True)
+                    no_brand_df = no_brand_df.fillna('')
+                    
                     sh_nobrand = gspread_client.open_by_key(SHEET_ID_TIDAK_ADA_BRAND)
                     worksheet_nobrand = sh_nobrand.sheet1
                     worksheet_nobrand.clear()
-                    set_with_dataframe(worksheet_nobrand, no_brand_df, nan_as_empty_string=True)
+                    # Argumen 'nan_as_empty_string' dihapus
+                    set_with_dataframe(worksheet_nobrand, no_brand_df)
                 st.success("Data tanpa brand berhasil ditulis ke 'TIDAK_ADA_BRAND'!")
                 
                 end_time = time.time()
