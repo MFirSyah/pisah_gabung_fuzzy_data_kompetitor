@@ -1,3 +1,11 @@
+# ===================================================================================
+#  Automasi Pelabelan Produk
+#  Versi: Gabungan Final (Struktur Stabil + Pelabelan Berlapis)
+# ===================================================================================
+
+# ===================================================================================
+# IMPORT LIBRARY
+# ===================================================================================
 import streamlit as st
 import pandas as pd
 import gspread
@@ -9,118 +17,136 @@ import re
 
 warnings.filterwarnings('ignore', category=UserWarning, module='gspread_dataframe')
 
-# --- Konfigurasi Google Sheets ---
+# ===================================================================================
+# KONFIGURASI HALAMAN & URL
+# ===================================================================================
+st.set_page_config(layout="wide", page_title="Automasi Pelabelan Produk")
+
 SOURCE_SHEET_URL = "https://docs.google.com/spreadsheets/d/1hl7YPEPg4aaEheN5fBKk65YX3-KdkQBRHCJWhVr9kVQ"
 DESTINATION_SHEET_URL = "https://docs.google.com/spreadsheets/d/1RhHw8F9PN8c0_C3lBflrkBBO89BuFe5hvYRPJd8vH5c"
 MISSING_INFO_SHEET_URL = "https://docs.google.com/spreadsheets/d/1Tu7hUiV7ZRijKLQWxWOVmv81ussqoPfKlkM5WFiHof0"
 
-# --- Fungsi Autentikasi ke Google Sheets ---
+# ===================================================================================
+# FUNGSI-FUNGSI UTAMA
+# ===================================================================================
+
 @st.cache_resource
 def get_gspread_client():
-    """Mengautentikasi ke Google Sheets menggunakan st.secrets."""
+    """Mengautentikasi ke Google API menggunakan Streamlit Secrets."""
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
-        scopes=[
-            "https://spreadsheets.google.com/feeds",
-            "https://www.googleapis.com/auth/drive",
-        ],
+        scopes=["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"],
     )
     return gspread.authorize(creds)
 
-# --- Fungsi untuk Memuat Data Referensi (Struktur Anda Dipertahankan) ---
-@st.cache_data(show_spinner="Memuat data referensi dari Google Sheets...")
-def load_reference_data(_client):
-    """Memuat sheet referensi (DATABASE, kamus, dll.) ke dalam DataFrame."""
-    try:
-        source_spreadsheet = _client.open_by_url(SOURCE_SHEET_URL)
-        db_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE").get_all_records())
-        db_brand_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE_BRAND").get_all_records())
-        
-        # --- PERBAIKAN STABILITAS ---
-        # Hanya hapus baris jika 'NAMA' benar-benar kosong
-        db_df.dropna(subset=['NAMA'], inplace=True)
-        if 'Brand' not in db_df.columns: db_df['Brand'] = None
-        if 'Kategori' not in db_df.columns: db_df['Kategori'] = None
-        
-        # Mengambil daftar brand unik
-        all_brands_list = []
-        if not db_brand_df.empty:
-            all_brands_list = db_brand_df.iloc[:, 0].dropna().unique().tolist()
-            
-        return db_df, all_brands_list, source_spreadsheet
-    except Exception as e:
-        st.error(f"Gagal memuat data referensi: {e}")
-        return None, None, None
+# --- FUNGSI PELABELAN BERLAPIS (PALING CANGGIH) ---
+def get_brand_and_category_layered(row, db_df, db_brand_list, kamus_dict):
+    """
+    Mesin pelabelan dengan 4 langkah prioritas:
+    1. Kamus Brand: Membersihkan brand asli menggunakan kamus.
+    2. Direct Match: Mencocokkan nama produk persis di DATABASE.
+    3. Fuzzy Match: Mencocokkan nama produk yang mirip di DATABASE.
+    4. Keyword Search: Mencari kata kunci brand dari DATABASE_BRAND di nama produk.
+    """
+    product_name = row['NAMA']
+    original_brand = row['BRAND']
 
-# --- FUNGSI DETEKSI CANGGIHAN YANG DICANGKOKKAN ---
-def check_brand_and_category(product_name, database_df, all_brands_list):
-    """Memeriksa brand & kategori dengan metode 3-langkah: Direct, Fuzzy, Keyword."""
     if not isinstance(product_name, str) or not product_name.strip():
         return None, None
 
+    # Langkah 1: Gunakan Kamus Brand untuk membersihkan brand awal
+    cleaned_brand = kamus_dict.get(str(original_brand).strip(), str(original_brand).strip())
+
     product_name_lower = product_name.lower().strip()
 
-    # Langkah 1: Direct Match
-    direct_match = database_df[database_df['NAMA'].str.lower() == product_name_lower]
+    # Langkah 2: Direct Match di DATABASE
+    direct_match = db_df[db_df['NAMA'].str.lower() == product_name_lower]
     if not direct_match.empty:
         return direct_match.iloc[0]['Brand'], direct_match.iloc[0]['Kategori']
 
-    # Langkah 2: Fuzzy Match (dengan pengaman)
-    choices = database_df['NAMA'].dropna().str.lower()
+    # Langkah 3: Fuzzy Match di DATABASE (dengan pengaman)
+    choices = db_df['NAMA'].dropna().str.lower()
     if not choices.empty:
-        match, score = process.extractOne(product_name_lower, choices, scorer=fuzz.token_sort_ratio)
-        if score >= 90:
-            matched_row = database_df[database_df['NAMA'].str.lower() == match]
-            if not matched_row.empty:
-                return matched_row.iloc[0]['Brand'], matched_row.iloc[0]['Kategori']
+        # Cek apakah `process.extractOne` mengembalikan tuple atau tidak
+        result = process.extractOne(product_name_lower, choices, scorer=fuzz.token_sort_ratio)
+        if result:
+            match, score = result
+            if score >= 90:
+                matched_row = db_df[db_df['NAMA'].str.lower() == match]
+                if not matched_row.empty:
+                    return matched_row.iloc[0]['Brand'], matched_row.iloc[0]['Kategori']
 
-    # Langkah 3: Keyword Search
-    for brand in all_brands_list:
+    # Jika langkah 2 & 3 gagal, gunakan brand hasil pembersihan kamus
+    # Jika brand bersih itu valid (ada di daftar brand), kita bisa asumsikan itu benar
+    if cleaned_brand.upper() in (brand.upper() for brand in db_brand_list):
+         return cleaned_brand, None # Kategori tidak diketahui, perlu cek manual
+
+    # Langkah 4: Keyword Search di NAMA PRODUK
+    for brand in db_brand_list:
         if re.search(r'\b' + re.escape(brand.lower()) + r'\b', product_name_lower):
-            return brand.upper(), None # Kategori kosong agar masuk daftar cek manual
+            return brand.upper(), None # Kategori tidak diketahui, perlu cek manual
 
     return None, None
 
-# --- FUNGSI UTAMA UNTUK MEMPROSES DATA (SUDAH DIUPGRADE) ---
-def process_data(source_spreadsheet, db_df, all_brands_list):
-    """Menggabungkan data toko dan melabelinya dengan metode canggih."""
+
+@st.cache_data(show_spinner="Memproses dan melabeli data...")
+def process_data(_client):
+    """Fungsi utama untuk memuat, menggabungkan, dan memproses data."""
+    source_spreadsheet = _client.open_by_url(SOURCE_SHEET_URL)
+    
+    # Memuat semua data referensi
+    db_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE").get_all_records())
+    db_brand_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE_BRAND").get_all_records())
+    kamus_df = pd.DataFrame(source_spreadsheet.worksheet("kamus_brand").get_all_records())
+
+    # Persiapan data referensi
+    db_df.dropna(subset=['NAMA'], inplace=True)
+    if 'Brand' not in db_df.columns: db_df['Brand'] = None
+    if 'Kategori' not in db_df.columns: db_df['Kategori'] = None
+    
+    db_brand_list = []
+    if not db_brand_df.empty:
+        db_brand_list = db_brand_df.iloc[:, 0].dropna().unique().tolist()
+        
+    kamus_dict = {}
+    if not kamus_df.empty:
+        kamus_dict = dict(zip(kamus_df['Alias'], kamus_df['Brand_Utama']))
+    
+    # Memuat dan menggabungkan data toko
     all_sheets = source_spreadsheet.worksheets()
     exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand", "DB KLIK - REKAP - READY", "DB KLIK - REKAP - HABIS"]
     df_list = []
 
     for sheet in all_sheets:
         if sheet.title not in exclude_sheets:
-            st.write(f"Memproses sheet: {sheet.title}...")
             data = sheet.get_all_records()
             if not data: continue
-
+            
             df = pd.DataFrame(data)
             parts = sheet.title.split(' - REKAP - ')
             df['Toko'] = parts[0].strip() if len(parts) == 2 else sheet.title
             df['Status'] = parts[1].strip() if len(parts) == 2 else 'Unknown'
             df_list.append(df)
-
+            
     if not df_list:
-        st.warning("Tidak ada data toko yang ditemukan untuk diproses.")
         return pd.DataFrame(), pd.DataFrame()
 
     combined_df = pd.concat(df_list, ignore_index=True)
 
-    # Menerapkan fungsi deteksi canggih ke setiap baris
+    # Menerapkan fungsi pelabelan berlapis
     results = combined_df.apply(
-        lambda row: check_brand_and_category(row['NAMA'], db_df, all_brands_list),
+        lambda row: get_brand_and_category_layered(row, db_df, db_brand_list, kamus_dict),
         axis=1,
         result_type='expand'
     )
     combined_df[['BRAND_HASIL', 'KATEGORI_HASIL']] = results
 
-    # Logika penulisan data yang sudah diperbaiki
+    # Logika penulisan data (seperti yang Anda inginkan)
     all_data_final = combined_df.copy()
     missing_data = all_data_final[all_data_final['BRAND_HASIL'].isna() | all_data_final['KATEGORI_HASIL'].isna()].copy()
-    
+
     return all_data_final, missing_data
 
-# --- Fungsi untuk Menulis Data ke Google Sheet ---
 def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
     """Menulis DataFrame ke worksheet yang ditentukan."""
     try:
@@ -138,50 +164,42 @@ def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
     except Exception as e:
         st.error(f"Gagal menulis data ke sheet '{worksheet_name}': {e}")
 
-
-# --- Tampilan Aplikasi Streamlit ---
-st.set_page_config(page_title="Automasi Pelabelan Brand Produk", layout="wide")
-st.title("🚀 Automasi Pelabelan Brand dan Kategori Produk")
+# ===================================================================================
+# TAMPILAN APLIKASI STREAMLIT
+# ===================================================================================
+st.title("🚀 Automasi Pelabelan Produk (Versi Final)")
 
 st.info("""
-Aplikasi ini menggunakan metode deteksi canggih (Direct, Fuzzy, Keyword) untuk melabeli produk.
-- **Spreadsheet Utama:** Berisi SEMUA produk. Produk yang tidak teridentifikasi akan memiliki kolom hasil yang kosong.
-- **Spreadsheet Data Kurang:** Berisi DAFTAR produk yang perlu Anda periksa dan lengkapi secara manual.
+Aplikasi ini menggunakan metode pelabelan berlapis (`Kamus` -> `Database Direct` -> `Database Fuzzy` -> `Keyword`).
+- **Spreadsheet Utama:** Berisi SEMUA produk. Kolom hasil akan kosong jika tidak teridentifikasi.
+- **Spreadsheet Data Kurang:** Berisi DAFTAR produk yang perlu Anda periksa/lengkapi manual.
 """)
 
 if st.button("Mulai Proses Pelabelan", type="primary"):
-    with st.spinner("Menghubungi Google Sheets dan memproses data... Mohon tunggu."):
+    with st.spinner("Menjalankan proses... Ini mungkin memakan waktu beberapa saat."):
         client = get_gspread_client()
         
-        st.header("1. Memuat Data Referensi")
-        db_df, all_brands_list, source_spreadsheet = load_reference_data(client)
+        st.header("1. Memproses Data")
+        all_processed_data, missing_info_df = process_data(client)
+        
+        st.success(f"Pemrosesan selesai. Total {len(all_processed_data)} baris data diproses.")
+        st.warning(f"Ditemukan {len(missing_info_df)} produk yang memerlukan pemeriksaan manual.")
 
-        if source_spreadsheet:
-            st.success("Berhasil memuat data referensi (DATABASE & DATABASE_BRAND).")
+        st.header("2. Menulis Hasil ke Google Sheets")
 
-            st.header("2. Memproses Data Toko")
-            all_processed_data, missing_info_df = process_data(source_spreadsheet, db_df, all_brands_list)
-            
-            st.success(f"Pemrosesan selesai. Total {len(all_processed_data)} baris data diproses.")
-            st.warning(f"Ditemukan {len(missing_info_df)} produk yang memerlukan pemeriksaan manual.")
-
-            st.header("3. Menulis Hasil ke Google Sheets")
-            
-            # Menulis SEMUA data ke spreadsheet utama
-            if not all_processed_data.empty:
-                cols_to_keep = ['TANGGAL', 'NAMA', 'HARGA', 'TERJUAL/BLN', 'BRAND', 'Toko', 'Status', 'BRAND_HASIL', 'KATEGORI_HASIL']
-                final_df = all_processed_data[[col for col in cols_to_keep if col in all_processed_data.columns]]
-                write_to_gsheet(client, DESTINATION_SHEET_URL, "Hasil Proses Lengkap", final_df)
-                st.subheader("Contoh Data yang Ditulis ke Spreadsheet Utama")
-                st.dataframe(final_df.head())
-
-            # Menulis data yang KURANG ke spreadsheet terpisah
-            if not missing_info_df.empty:
-                cols_to_keep_missing = ['TANGGAL', 'NAMA', 'Toko', 'Status']
-                final_missing_df = missing_info_df[[col for col in cols_to_keep_missing if col in missing_info_df.columns]]
-                write_to_gsheet(client, MISSING_INFO_SHEET_URL, "Perlu Dicek Manual", final_missing_df)
-                st.subheader("Contoh Data yang Perlu Dicek Manual")
-                st.dataframe(final_missing_df.head())
-            else:
-                st.balloons()
-                st.success("Luar biasa! Semua data berhasil diidentifikasi dengan lengkap.")
+        if not all_processed_data.empty:
+            cols_to_keep_main = ['TANGGAL', 'NAMA', 'HARGA', 'TERJUAL/BLN', 'BRAND', 'Toko', 'Status', 'BRAND_HASIL', 'KATEGORI_HASIL']
+            final_df_main = all_processed_data[[col for col in cols_to_keep_main if col in all_processed_data.columns]]
+            write_to_gsheet(client, DESTINATION_SHEET_URL, "Hasil Proses Lengkap", final_df_main)
+            st.subheader("Contoh Data yang Ditulis ke Spreadsheet Utama")
+            st.dataframe(final_df_main.head())
+        
+        if not missing_info_df.empty:
+            cols_to_keep_missing = ['TANGGAL', 'NAMA', 'Toko', 'Status']
+            final_missing_df = missing_info_df[[col for col in cols_to_keep_missing if col in missing_info_df.columns]]
+            write_to_gsheet(client, MISSING_INFO_SHEET_URL, "Perlu Dicek Manual", final_missing_df)
+            st.subheader("Contoh Data yang Perlu Dicek Manual")
+            st.dataframe(final_missing_df.head())
+        else:
+            st.balloons()
+            st.success("Luar biasa! Semua data berhasil diidentifikasi dengan lengkap.")
