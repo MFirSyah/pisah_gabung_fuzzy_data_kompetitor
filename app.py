@@ -21,7 +21,7 @@ def get_gspread_client():
     creds = Credentials.from_service_account_info(
         st.secrets["gcp_service_account"],
         scopes=[
-            "httpshttps://spreadsheets.google.com/feeds",
+            "https://spreadsheets.google.com/feeds",
             "https://www.googleapis.com/auth/drive",
         ],
     )
@@ -195,3 +195,4 @@ if st.button("Mulai Proses Pelabelan", type="primary"):
             else:
                 st.balloons()
                 st.success("Luar biasa! Semua data berhasil diidentifikasi dengan lengkap.")
+
