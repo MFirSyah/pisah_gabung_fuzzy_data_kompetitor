@@ -27,27 +27,30 @@ def get_gspread_client():
     )
     return gspread.authorize(creds)
 
-# --- FUNGSI BARU: Menggabungkan Pemuatan & Pemrosesan Awal (Lebih Efisien) ---
-@st.cache_data(show_spinner=False) # Spinner akan diatur manual oleh st.status
-def load_and_prepare_data(_client, status_container):
+# --- FUNGSI PEMUATAN DATA DENGAN NAMA ARGUMEN YANG DIPERBAIKI ---
+@st.cache_data(show_spinner=False)
+# **====================================================================**
+# ** PERBAIKAN UTAMA DI SINI                                          **
+# ** Tambahkan garis bawah (_) pada argumen yang tidak bisa di-hash.  **
+# **====================================================================**
+def load_and_prepare_data(_client, _status_container):
     """
     Satu fungsi untuk menangani semua koneksi dan pembacaan data,
     dengan update status secara real-time.
     """
     try:
-        status_container.write("🔄 Membuka koneksi ke Google Sheets...")
+        _status_container.write("🔄 Membuka koneksi ke Google Sheets...")
         source_spreadsheet = _client.open_by_url(SOURCE_SHEET_URL)
         
-        status_container.write("📚 Membaca sheet `DATABASE`...")
+        _status_container.write("📚 Membaca sheet `DATABASE`...")
         db_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE").get_all_records())
         
-        status_container.write("📚 Membaca sheet `DATABASE_BRAND`...")
+        _status_container.write("📚 Membaca sheet `DATABASE_BRAND`...")
         db_brand_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE_BRAND").get_all_records())
 
-        status_container.write("📚 Membaca sheet `kamus_brand`...")
+        _status_container.write("📚 Membaca sheet `kamus_brand`...")
         kamus_df = pd.DataFrame(source_spreadsheet.worksheet("kamus_brand").get_all_records())
 
-        # Membaca semua sheet toko
         all_sheets = source_spreadsheet.worksheets()
         exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand", "DB KLIK - REKAP - READY", "DB KLIK - REKAP - HABIS"]
         df_list = []
@@ -56,7 +59,7 @@ def load_and_prepare_data(_client, status_container):
         total_sheets = len(sheets_to_process)
 
         for i, sheet in enumerate(sheets_to_process, 1):
-            status_container.write(f"[{i}/{total_sheets}] Membaca sheet toko: `{sheet.title}`...")
+            _status_container.write(f"[{i}/{total_sheets}] Membaca sheet toko: `{sheet.title}`...")
             data = sheet.get_all_records()
             if not data: continue
             
@@ -72,8 +75,8 @@ def load_and_prepare_data(_client, status_container):
             
         combined_df = pd.concat(df_list, ignore_index=True)
         
-        status_container.write("✅ Semua data berhasil dimuat!")
-        time.sleep(1) # Jeda singkat agar pesan terbaca
+        _status_container.write("✅ Semua data berhasil dimuat!")
+        time.sleep(1)
         return combined_df, db_df, db_brand_df, kamus_df
         
     except Exception as e:
@@ -104,7 +107,6 @@ def find_best_match(product_name, db_df, all_brands_list):
 
 # --- Fungsi untuk Menulis Data ke Google Sheet ---
 def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
-    # (Fungsi ini tidak perlu diubah)
     try:
         spreadsheet = client.open_by_url(sheet_url)
         worksheet = spreadsheet.worksheet(worksheet_name)
@@ -129,6 +131,7 @@ if st.button("Mulai Proses Pelabelan", type="primary"):
     client = get_gspread_client()
     
     with st.status("Langkah 1: Memuat semua data dari Google Sheets...", expanded=True) as status:
+        # Panggil fungsi dengan argumen yang sama, Streamlit akan tahu untuk tidak me-hash yang bergaris bawah
         combined_df, db_df, db_brand_df, kamus_df = load_and_prepare_data(client, status)
         if combined_df is not None:
             status.update(label="✅ Data berhasil dimuat!", state="complete", expanded=False)
