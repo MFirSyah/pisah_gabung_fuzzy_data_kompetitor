@@ -91,17 +91,32 @@ def process_data(source_spreadsheet, db_df, all_brands_list, kamus_dict):
     exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand", "DB KLIK - REKAP - READY", "DB KLIK - REKAP - HABIS"]
     df_list = []
 
-    for sheet in all_sheets:
-        if sheet.title not in exclude_sheets:
-            st.write(f"Memproses sheet: {sheet.title}...")
-            data = sheet.get_all_records()
-            if not data: continue
+    # Progress bar & log status
+    progress = st.progress(0)
+    status_text = st.empty()
 
-            df = pd.DataFrame(data)
-            parts = sheet.title.split(' - REKAP - ')
-            df['Toko'] = parts[0].strip() if len(parts) == 2 else sheet.title
-            df['Status'] = parts[1].strip() if len(parts) == 2 else 'Unknown'
-            df_list.append(df)
+    sheets_to_process = [s for s in all_sheets if s.title not in exclude_sheets]
+    total = len(sheets_to_process)
+
+    for i, sheet in enumerate(sheets_to_process, start=1):
+        status_text.text(f"[{i}/{total}] Memproses sheet: {sheet.title}...")
+        data = sheet.get_all_records()
+        if not data:
+            progress.progress(i/total)
+            continue
+
+        df = pd.DataFrame(data)
+        parts = sheet.title.split(' - REKAP - ')
+        df['Toko'] = parts[0].strip() if len(parts) == 2 else sheet.title
+        df['Status'] = parts[1].strip() if len(parts) == 2 else 'Unknown'
+        df_list.append(df)
+
+        # update progress bar
+        progress.progress(i/total)
+
+    # selesai
+    progress.empty()
+    status_text.text("✅ Semua sheet berhasil diproses!")
 
     if not df_list:
         st.warning("Tidak ada data toko yang ditemukan untuk diproses.")
@@ -157,7 +172,7 @@ Aplikasi ini menggunakan metode pelabelan berlapis (Kamus -> Direct -> Fuzzy -> 
 """)
 
 if st.button("Mulai Proses Pelabelan", type="primary"):
-    with st.spinner("Menghubungi Google Sheets dan memproses data... Mohon tunggu."):
+    with st.spinner("Menghubungi Google Sheets..."):
         client = get_gspread_client()
         
         st.header("1. Memuat Data Referensi")
