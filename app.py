@@ -123,18 +123,12 @@ def process_all_data(_spreadsheet_obj, progress_bar):
     results = combined_df.apply(lambda row: find_brand_and_category(row, db_map, category_map, pattern, cased_map), axis=1)
     results_df = pd.DataFrame(results.tolist(), index=combined_df.index, columns=['BRAND_RAW', 'KATEGORI_RAW'])
 
-    # --- PERUBAHAN LOGIKA DIMULAI DI SINI ---
-    
-    # 1. Salin baris yang brand-nya tidak ditemukan ke sheet terpisah SEBELUM diisi label.
     unidentified_mask = results_df['BRAND_RAW'].isnull()
     no_brand_df = combined_df[unidentified_mask].copy()
     no_brand_final_df = no_brand_df[['TANGGAL', 'NAMA', 'Toko', 'Status']]
 
-    # 2. Isi kolom final di DataFrame utama dengan label yang jelas.
     combined_df['BRAND_FINAL'] = results_df['BRAND_RAW'].fillna("TIDAK ADA BRAND")
     combined_df['KATEGORI_FINAL'] = results_df['KATEGORI_RAW'].fillna("TIDAK ADA KATEGORI")
-
-    # --- AKHIR PERUBAHAN LOGIKA ---
     
     return combined_df, no_brand_final_df
 
@@ -151,7 +145,6 @@ def link_similar_products(df, threshold=0.85):
     df['NAMA_CLEAN'] = df['NAMA'].apply(clean_text)
     
     df['PRODUCT_ID'] = -1
-    # Hanya lakukan fuzzy matching pada brand yang teridentifikasi
     unique_brands = df[df['BRAND_FINAL'] != "TIDAK ADA BRAND"]['BRAND_FINAL'].dropna().unique()
     progress_bar = st.progress(0, text="Memulai proses penautan produk...")
     
@@ -200,18 +193,26 @@ if st.button("PROSES SEMUA DATA DARI GOOGLE SHEET", type="primary"):
                 
                 df_to_save = processed_df.drop(columns=['NAMA_CLEAN'], errors='ignore')
 
+                # --- FIX UNTUK ERROR 'inf' ---
+                # Mengganti nilai 'infinity' (inf) yang tidak valid dengan nilai kosong (NaN)
+                # Baris ini penting untuk mencegah error saat menulis ke Google Sheets
+                df_to_save.replace([np.inf, -np.inf], np.nan, inplace=True)
+                # -----------------------------
+
                 with st.spinner(f"Menulis {len(df_to_save):,} baris ke 'DATA_LOOKER'..."):
                     sh_looker = gspread_client.open_by_key(SHEET_ID_DATA_LOOKER)
                     worksheet_looker = sh_looker.sheet1
                     worksheet_looker.clear()
-                    set_with_dataframe(worksheet_looker, df_to_save)
+                    set_with_dataframe(worksheet_looker, df_to_save, nan_as_empty_string=True)
                 st.success("Data utama berhasil ditulis ke 'DATA_LOOKER'!")
 
                 with st.spinner(f"Menulis {len(no_brand_df):,} baris ke 'TIDAK_ADA_BRAND'..."):
+                    # Lakukan juga pembersihan nilai 'inf' untuk sheet ini
+                    no_brand_df.replace([np.inf, -np.inf], np.nan, inplace=True)
                     sh_nobrand = gspread_client.open_by_key(SHEET_ID_TIDAK_ADA_BRAND)
                     worksheet_nobrand = sh_nobrand.sheet1
                     worksheet_nobrand.clear()
-                    set_with_dataframe(worksheet_nobrand, no_brand_df)
+                    set_with_dataframe(worksheet_nobrand, no_brand_df, nan_as_empty_string=True)
                 st.success("Data tanpa brand berhasil ditulis ke 'TIDAK_ADA_BRAND'!")
                 
                 end_time = time.time()
