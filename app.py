@@ -27,7 +27,7 @@ STORE_SHEET_NAMES = [
     'MULTIFUNGSI - REKAP - READY', 'MULTIFUNGSI - REKAP - HABIS',
     'TECH ISLAND - REKAP - READY', 'TECH ISLAND - REKAP - HABIS',
     'GG STORE - REKAP - READY', 'GG STORE - REKAP - HABIS',
-    'SURYA MITRA ONLINE - REKAP - RE', 'SURYA MITRA ONLINE - REKAP - HA'
+    'SURYA MITRA ONLINE - REKAP - READY', 'SURYA MITRA ONLINE - REKAP - HABIS'
 ]
 
 # --- FUNGSI-FUNGSI UTAMA ---
@@ -225,3 +225,4 @@ if st.button("PROSES SEMUA DATA DARI GOOGLE SHEET", type="primary"):
             st.error(f"Google Sheet dengan ID '{SHEET_ID_DATA_REKAP}' tidak ditemukan.")
         except Exception as e:
             st.error(f"Terjadi kesalahan tak terduga: {e}")
+
