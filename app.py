@@ -13,13 +13,11 @@ import numpy as np
 st.set_page_config(page_title="Dashboard Pengolahan Data", layout="wide")
 
 # --- KONFIGURASI PENGGUNA ---
-# ID untuk Google Sheet SUMBER, TUJUAN DATA, dan TUJUAN DATA TANPA BRAND
 SHEET_ID_DATA_REKAP = "1hl7YPEPg4aaEheN5fBKk65YX3-KdkQBRHCJWhVr9kVQ"
 SHEET_ID_DATA_LOOKER = "1RhHw8F9PN8c0_C3lBflrkBBO89BuFe5hvYRPJd8vH5c"
 SHEET_ID_TIDAK_ADA_BRAND = "1Tu7hUiV7ZRijKLQWxWOVmv81ussqoPfKlkM5WFiHof0"
 
 # Daftar NAMA SHEET (TAB) di dalam Google Sheet DATA_REKAP yang akan diproses
-# Pastikan nama-nama ini sama persis dengan yang ada di spreadsheet Anda
 STORE_SHEET_NAMES = [
     'DB KLIK - REKAP - READY', 'DB KLIK - REKAP - HABIS',
     'ABDITAMA - REKAP - READY', 'ABDITAMA - REKAP - HABIS',
@@ -52,18 +50,15 @@ def load_mapping_data(_spreadsheet_obj):
     """Memuat data mapping (DATABASE, DATABASE_BRAND, kamus_brand) dari Google Sheet sumber."""
     st.info("Membaca sheet 'DATABASE', 'DATABASE_BRAND', dan 'kamus_brand'...")
     try:
-        # Membaca data dari masing-masing sheet
         db_sheet = _spreadsheet_obj.worksheet('DATABASE')
         db_df = pd.DataFrame(db_sheet.get_all_records())
 
         brand_sheet = _spreadsheet_obj.worksheet('DATABASE_BRAND')
-        # Asumsi brand hanya di kolom pertama
         brands_df = pd.DataFrame(brand_sheet.get_all_values())[0]
 
         kamus_sheet = _spreadsheet_obj.worksheet('kamus_brand')
         kamus_df = pd.DataFrame(kamus_sheet.get_all_records())
 
-        # Proses data mapping (sama seperti sebelumnya, tapi sumbernya dari GSheet)
         db_product_map = {str(row['NAMA']).lower(): (row['Brand'], row['Kategori']) for _, row in db_df.dropna(subset=['NAMA', 'Brand', 'Kategori']).iterrows()}
         most_common_category = db_df.dropna(subset=['Brand', 'Kategori']).groupby('Brand')['Kategori'].agg(lambda x: x.mode().iloc[0] if not x.mode().empty else None).to_dict()
         main_brands_lower = set(brands_df.str.lower().dropna())
@@ -83,7 +78,7 @@ def load_mapping_data(_spreadsheet_obj):
         return None, None, None, None
 
 def find_brand_and_category(row, db_map, category_map, pattern, cased_map):
-    """Fungsi cerdas untuk mencari brand dan kategori untuk satu baris data."""
+    """Fungsi cerdas untuk mencari brand dan kategori. Mengembalikan None jika tidak ketemu."""
     product_name_lower = str(row['NAMA']).lower()
     if row['Toko'] == 'DB KLIK' and product_name_lower in db_map: return db_map[product_name_lower]
     match = re.search(pattern, product_name_lower)
@@ -107,37 +102,42 @@ def process_all_data(_spreadsheet_obj, progress_bar):
             worksheet = _spreadsheet_obj.worksheet(sheet_name)
             df = pd.DataFrame(worksheet.get_all_records())
             
-            # Menentukan Nama Toko dan Status dari Nama Sheet
             parts = sheet_name.split(' - REKAP - ')
             df['Toko'] = parts[0]
             status_part = parts[1]
-            if status_part == 'READY' or status_part == 'RE':
-                df['Status'] = 'Ready'
-            elif status_part == 'HABIS' or status_part == 'HA':
-                df['Status'] = 'Habis'
-            else:
-                df['Status'] = 'Unknown'
+            if status_part in ('READY', 'RE'): df['Status'] = 'Ready'
+            elif status_part in ('HABIS', 'HA'): df['Status'] = 'Habis'
+            else: df['Status'] = 'Unknown'
             all_dfs.append(df)
         except gspread.exceptions.WorksheetNotFound:
             st.warning(f"Sheet '{sheet_name}' tidak ditemukan, akan dilewati.")
-        except Exception as e:
-            st.error(f"Error saat memproses sheet '{sheet_name}': {e}")
     
     if not all_dfs:
         st.error("Tidak ada data toko yang berhasil dimuat. Proses dihentikan.")
         return None, None
 
     combined_df = pd.concat(all_dfs, ignore_index=True)
-    st.info(f"Total {len(combined_df):,} baris data dari semua toko berhasil digabungkan.")
+    st.info(f"Total {len(combined_df):,} baris data berhasil digabungkan.")
 
     st.info("Memulai pelabelan ulang Brand dan Kategori...")
     results = combined_df.apply(lambda row: find_brand_and_category(row, db_map, category_map, pattern, cased_map), axis=1)
-    combined_df[['BRAND_FINAL', 'KATEGORI_FINAL']] = pd.DataFrame(results.tolist(), index=combined_df.index)
+    results_df = pd.DataFrame(results.tolist(), index=combined_df.index, columns=['BRAND_RAW', 'KATEGORI_RAW'])
 
-    no_brand_df = combined_df[combined_df['BRAND_FINAL'].isnull()].copy()
+    # --- PERUBAHAN LOGIKA DIMULAI DI SINI ---
+    
+    # 1. Salin baris yang brand-nya tidak ditemukan ke sheet terpisah SEBELUM diisi label.
+    unidentified_mask = results_df['BRAND_RAW'].isnull()
+    no_brand_df = combined_df[unidentified_mask].copy()
     no_brand_final_df = no_brand_df[['TANGGAL', 'NAMA', 'Toko', 'Status']]
+
+    # 2. Isi kolom final di DataFrame utama dengan label yang jelas.
+    combined_df['BRAND_FINAL'] = results_df['BRAND_RAW'].fillna("TIDAK ADA BRAND")
+    combined_df['KATEGORI_FINAL'] = results_df['KATEGORI_RAW'].fillna("TIDAK ADA KATEGORI")
+
+    # --- AKHIR PERUBAHAN LOGIKA ---
     
     return combined_df, no_brand_final_df
+
 
 def link_similar_products(df, threshold=0.85):
     """Fungsi fuzzy matching yang TIDAK MENGUBAH KOLOM 'NAMA' ASLI."""
@@ -151,7 +151,8 @@ def link_similar_products(df, threshold=0.85):
     df['NAMA_CLEAN'] = df['NAMA'].apply(clean_text)
     
     df['PRODUCT_ID'] = -1
-    unique_brands = df['BRAND_FINAL'].dropna().unique()
+    # Hanya lakukan fuzzy matching pada brand yang teridentifikasi
+    unique_brands = df[df['BRAND_FINAL'] != "TIDAK ADA BRAND"]['BRAND_FINAL'].dropna().unique()
     progress_bar = st.progress(0, text="Memulai proses penautan produk...")
     
     for i, brand in enumerate(unique_brands):
@@ -194,8 +195,6 @@ if st.button("PROSES SEMUA DATA DARI GOOGLE SHEET", type="primary"):
             processed_df, no_brand_df = process_all_data(source_spreadsheet, progress_bar_load)
 
             if processed_df is not None:
-                progress_bar_load.progress(1.0, "Proses pelabelan selesai!")
-
                 if do_fuzzy_matching:
                     processed_df = link_similar_products(processed_df, threshold=similarity_threshold)
                 
@@ -221,6 +220,6 @@ if st.button("PROSES SEMUA DATA DARI GOOGLE SHEET", type="primary"):
                 st.dataframe(df_to_save.head())
 
         except gspread.exceptions.SpreadsheetNotFound:
-            st.error(f"Google Sheet dengan ID '{SHEET_ID_DATA_REKAP}' tidak ditemukan. Pastikan ID sudah benar dan service account memiliki akses.")
+            st.error(f"Google Sheet dengan ID '{SHEET_ID_DATA_REKAP}' tidak ditemukan.")
         except Exception as e:
             st.error(f"Terjadi kesalahan tak terduga: {e}")
