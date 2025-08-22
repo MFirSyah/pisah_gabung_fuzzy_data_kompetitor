@@ -1,9 +1,6 @@
-# requirements.txt
 streamlit
 pandas
 gspread
 gspread-dataframe
-google-auth-oauthlib
-thefuzz
-python-Levenshtein
-regex
+oauth2client
+scikit-learn
