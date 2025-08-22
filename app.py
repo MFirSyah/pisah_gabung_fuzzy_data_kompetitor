@@ -35,12 +35,14 @@ def load_all_data(_client, _status_container):
         source_spreadsheet = _client.open_by_url(SOURCE_SHEET_URL)
         
         _status_container.write("📚 Membaca data referensi (DATABASE, BRAND, KAMUS)...")
+        # Muat semua sheet referensi
         db_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE").get_all_records())
         db_brand_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE_BRAND").get_all_records())
         kamus_df = pd.DataFrame(source_spreadsheet.worksheet("kamus_brand").get_all_records())
 
+        # Muat semua sheet toko, TERMASUK DB KLIK untuk diproses bersama
         all_sheets = source_spreadsheet.worksheets()
-        exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand", "DB KLIK - REKAP - READY", "DB KLIK - REKAP - HABIS"]
+        exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand"] # Hanya kecualikan sheet referensi
         df_list = []
         
         sheets_to_process = [s for s in all_sheets if s.title not in exclude_sheets]
@@ -81,7 +83,6 @@ def find_best_match_fuzzy_only(product_name, db_df):
 
 # --- Fungsi untuk Menulis Data ke Google Sheet ---
 def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
-    # (Fungsi ini tidak perlu diubah)
     try:
         spreadsheet = client.open_by_url(sheet_url)
         worksheet = spreadsheet.worksheet(worksheet_name)
@@ -114,42 +115,38 @@ if st.button("Mulai Proses Pelabelan", type="primary"):
             all_brands_list = db_brand_df.iloc[:, 0].dropna().str.strip().unique().tolist()
             kamus_dict = dict(zip(kamus_df['Alias'], kamus_df['Brand_Utama']))
             
-            # --- LANGKAH EFISIEN 1: Pembersihan Awal ---
             status.write("🧹 1/5: Membersihkan brand awal menggunakan `kamus_brand`...")
             data_toko['BRAND_CLEANED'] = data_toko.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip().replace(kamus_dict)
             
-            # --- LANGKAH EFISIEN 2: Pencocokan Langsung via Merge ---
             status.write(f"⚡ 2/5: Melakukan pencocokan langsung pada {len(data_toko)} baris...")
             db_subset = db_df[['NAMA', 'Brand', 'Kategori']].rename(columns={'Brand': 'BRAND_DB', 'Kategori': 'KATEGORI_DB'})
             processed_data = pd.merge(data_toko, db_subset, on='NAMA', how='left')
             
-            # --- LANGKAH EFISIEN 3: Pencarian Keyword via Regex ---
             remaining_mask = processed_data['BRAND_DB'].isna()
             remaining_count = remaining_mask.sum()
             status.write(f"🎯 3/5: Mencari keyword brand pada sisa {remaining_count} baris...")
             if remaining_count > 0 and all_brands_list:
-                # Buat satu pola regex besar: \b(brand1|brand2|...)\b
                 regex_pattern = r'\b(' + '|'.join(re.escape(brand) for brand in all_brands_list) + r')\b'
-                # Ekstrak brand yang cocok dalam satu kali jalan
                 keyword_brands = processed_data.loc[remaining_mask, 'NAMA'].str.extract(regex_pattern, flags=re.IGNORECASE)[0]
-                # Isi hasil ke kolom BRAND_DB
                 processed_data.loc[remaining_mask, 'BRAND_DB'] = keyword_brands.str.upper()
 
-            # --- LANGKAH EFISIEN 4: Pencocokan Fuzzy (Pilihan Terakhir) ---
+            # --- PERUBAHAN LOGIKA DI SINI ---
+            # Hanya jalankan fuzzy pada sisa data DARI DB KLIK
             remaining_mask = processed_data['BRAND_DB'].isna()
-            remaining_count = remaining_mask.sum()
-            status.write(f"🧠 4/5: Melakukan pencocokan fuzzy pada sisa {remaining_count} baris terakhir...")
-            if remaining_count > 0:
-                fuzzy_results = processed_data[remaining_mask].apply(
+            dbklik_remaining_mask = remaining_mask & (processed_data['Toko'] == 'DB KLIK')
+            dbklik_remaining_count = dbklik_remaining_mask.sum()
+            
+            status.write(f"🧠 4/5: Melakukan pencocokan fuzzy **khusus** pada sisa {dbklik_remaining_count} baris dari DB KLIK...")
+            if dbklik_remaining_count > 0:
+                fuzzy_results = processed_data[dbklik_remaining_mask].apply(
                     lambda row: find_best_match_fuzzy_only(row.get('NAMA', ''), db_df),
                     axis=1,
                     result_type='expand'
                 )
                 if not fuzzy_results.empty:
-                    processed_data.loc[remaining_mask, 'BRAND_DB'] = fuzzy_results[0]
-                    processed_data.loc[remaining_mask, 'KATEGORI_DB'] = fuzzy_results[1]
+                    processed_data.loc[dbklik_remaining_mask, 'BRAND_DB'] = fuzzy_results[0]
+                    processed_data.loc[dbklik_remaining_mask, 'KATEGORI_DB'] = fuzzy_results[1]
 
-            # --- LANGKAH EFISIEN 5: Finalisasi ---
             status.write("🧩 5/5: Menggabungkan semua hasil pelabelan...")
             processed_data['BRAND_HASIL'] = processed_data['BRAND_DB'].fillna(processed_data['BRAND_CLEANED'])
             processed_data['KATEGORI_HASIL'] = processed_data['KATEGORI_DB']
