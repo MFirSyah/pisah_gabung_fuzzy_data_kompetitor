@@ -1,6 +1,5 @@
 streamlit
 pandas
-thefuzz[speedup]
 gspread
+gspread-dataframe
 google-auth-oauthlib
-openpyxl
