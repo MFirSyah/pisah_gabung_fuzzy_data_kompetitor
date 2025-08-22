@@ -27,7 +27,7 @@ def get_gspread_client():
     )
     return gspread.authorize(creds)
 
-# --- FUNGSI PEMUATAN DATA (SUDAH EFISIEN) ---
+# --- FUNGSI PEMUATAN DATA (DENGAN PEMBERSIHAN NAMA KOLOM) ---
 @st.cache_data(show_spinner=False)
 def load_all_data(_client, _status_container):
     try:
@@ -35,14 +35,19 @@ def load_all_data(_client, _status_container):
         source_spreadsheet = _client.open_by_url(SOURCE_SHEET_URL)
         
         _status_container.write("📚 Membaca data referensi (DATABASE, BRAND, KAMUS)...")
-        # Muat semua sheet referensi
+        
+        # Muat dan langsung bersihkan nama kolom
         db_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE").get_all_records())
+        db_df.columns = db_df.columns.str.strip().str.upper() # <-- PERBAIKAN
+        
         db_brand_df = pd.DataFrame(source_spreadsheet.worksheet("DATABASE_BRAND").get_all_records())
-        kamus_df = pd.DataFrame(source_spreadsheet.worksheet("kamus_brand").get_all_records())
+        db_brand_df.columns = db_brand_df.columns.str.strip().str.upper() # <-- PERBAIKAN
 
-        # Muat semua sheet toko, TERMASUK DB KLIK untuk diproses bersama
+        kamus_df = pd.DataFrame(source_spreadsheet.worksheet("kamus_brand").get_all_records())
+        kamus_df.columns = kamus_df.columns.str.strip().str.upper() # <-- PERBAIKAN
+
         all_sheets = source_spreadsheet.worksheets()
-        exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand"] # Hanya kecualikan sheet referensi
+        exclude_sheets = ["DATABASE", "DATABASE_BRAND", "kamus_brand"]
         df_list = []
         
         sheets_to_process = [s for s in all_sheets if s.title not in exclude_sheets]
@@ -51,9 +56,11 @@ def load_all_data(_client, _status_container):
             data = sheet.get_all_records()
             if not data: continue
             df = pd.DataFrame(data)
+            df.columns = df.columns.str.strip().str.upper() # <-- PERBAIKAN
+            
             parts = sheet.title.split(' - REKAP - ')
-            df['Toko'] = parts[0].strip() if len(parts) == 2 else sheet.title
-            df['Status'] = parts[1].strip() if len(parts) == 2 else 'Unknown'
+            df['TOKO'] = parts[0].strip() if len(parts) == 2 else sheet.title
+            df['STATUS'] = parts[1].strip() if len(parts) == 2 else 'Unknown'
             df_list.append(df)
         
         if not df_list: return None, None, None, None
@@ -64,7 +71,7 @@ def load_all_data(_client, _status_container):
         st.error(f"Gagal memuat data: {e}")
         return None, None, None, None
 
-# --- FUNGSI DETEKSI FUZZY (HANYA UNTUK SISA DATA PALING AKHIR) ---
+# --- FUNGSI DETEKSI FUZZY ---
 def find_best_match_fuzzy_only(product_name, db_df):
     if not isinstance(product_name, str) or not product_name.strip():
         return None, None
@@ -78,7 +85,7 @@ def find_best_match_fuzzy_only(product_name, db_df):
             if score >= 90:
                 matched_row = db_df[db_df['NAMA'].str.lower() == match]
                 if not matched_row.empty:
-                    return matched_row.iloc[0]['Brand'], matched_row.iloc[0]['Kategori']
+                    return matched_row.iloc[0]['BRAND'], matched_row.iloc[0]['KATEGORI']
     return None, None
 
 # --- Fungsi untuk Menulis Data ke Google Sheet ---
@@ -95,7 +102,6 @@ def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
 # --- Tampilan Aplikasi Streamlit ---
 st.set_page_config(page_title="Automasi Pelabelan Super Efisien", layout="wide")
 st.title("🚀 Automasi Pelabelan Brand dan Kategori (Versi Super Efisien)")
-st.info("Aplikasi ini menggunakan metode pemrosesan yang dioptimalkan untuk menangani data dalam jumlah besar dengan cepat.")
 
 if st.button("Mulai Proses Pelabelan", type="primary"):
     client = get_gspread_client()
@@ -111,15 +117,16 @@ if st.button("Mulai Proses Pelabelan", type="primary"):
         with st.status("Langkah 2: Melakukan pelabelan data...", expanded=True) as status:
             
             status.write("🔧 Mempersiapkan data referensi...")
+            # Menggunakan nama kolom standar (uppercase)
             db_df.dropna(subset=['NAMA'], inplace=True)
             all_brands_list = db_brand_df.iloc[:, 0].dropna().str.strip().unique().tolist()
-            kamus_dict = dict(zip(kamus_df['Alias'], kamus_df['Brand_Utama']))
+            kamus_dict = dict(zip(kamus_df['ALIAS'], kamus_df['BRAND_UTAMA']))
             
-            status.write("🧹 1/5: Membersihkan brand awal menggunakan `kamus_brand`...")
+            status.write("🧹 1/5: Membersihkan brand awal...")
             data_toko['BRAND_CLEANED'] = data_toko.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip().replace(kamus_dict)
             
-            status.write(f"⚡ 2/5: Melakukan pencocokan langsung pada {len(data_toko)} baris...")
-            db_subset = db_df[['NAMA', 'Brand', 'Kategori']].rename(columns={'Brand': 'BRAND_DB', 'Kategori': 'KATEGORI_DB'})
+            status.write(f"⚡ 2/5: Melakukan pencocokan langsung...")
+            db_subset = db_df[['NAMA', 'BRAND', 'KATEGORI']].rename(columns={'BRAND': 'BRAND_DB', 'KATEGORI': 'KATEGORI_DB'})
             processed_data = pd.merge(data_toko, db_subset, on='NAMA', how='left')
             
             remaining_mask = processed_data['BRAND_DB'].isna()
@@ -130,13 +137,10 @@ if st.button("Mulai Proses Pelabelan", type="primary"):
                 keyword_brands = processed_data.loc[remaining_mask, 'NAMA'].str.extract(regex_pattern, flags=re.IGNORECASE)[0]
                 processed_data.loc[remaining_mask, 'BRAND_DB'] = keyword_brands.str.upper()
 
-            # --- PERUBAHAN LOGIKA DI SINI ---
-            # Hanya jalankan fuzzy pada sisa data DARI DB KLIK
             remaining_mask = processed_data['BRAND_DB'].isna()
-            dbklik_remaining_mask = remaining_mask & (processed_data['Toko'] == 'DB KLIK')
+            dbklik_remaining_mask = remaining_mask & (processed_data['TOKO'] == 'DB KLIK')
             dbklik_remaining_count = dbklik_remaining_mask.sum()
-            
-            status.write(f"🧠 4/5: Melakukan pencocokan fuzzy **khusus** pada sisa {dbklik_remaining_count} baris dari DB KLIK...")
+            status.write(f"🧠 4/5: Melakukan pencocokan fuzzy khusus pada sisa {dbklik_remaining_count} baris dari DB KLIK...")
             if dbklik_remaining_count > 0:
                 fuzzy_results = processed_data[dbklik_remaining_mask].apply(
                     lambda row: find_best_match_fuzzy_only(row.get('NAMA', ''), db_df),
@@ -155,15 +159,14 @@ if st.button("Mulai Proses Pelabelan", type="primary"):
             missing_info_df = all_processed_data[all_processed_data['BRAND_HASIL'].isna() | all_processed_data['KATEGORI_HASIL'].isna()].copy()
             status.update(label="✅ Pelabelan Selesai!", state="complete", expanded=False)
 
-        st.success(f"Pemrosesan selesai. Total {len(all_processed_data)} baris data diproses.")
-        st.warning(f"Ditemukan {len(missing_info_df)} produk yang memerlukan pemeriksaan manual.")
+        st.success(f"Pemrosesan selesai. Ditemukan {len(missing_info_df)} produk yang perlu pemeriksaan manual.")
 
         with st.status("Langkah 3: Menulis hasil ke Google Sheets...", expanded=True):
-            cols_to_keep = ['TANGGAL', 'NAMA', 'HARGA', 'TERJUAL/BLN', 'BRAND', 'Toko', 'Status', 'BRAND_HASIL', 'KATEGORI_HASIL']
+            cols_to_keep = ['TANGGAL', 'NAMA', 'HARGA', 'TERJUAL/BLN', 'BRAND', 'TOKO', 'STATUS', 'BRAND_HASIL', 'KATEGORI_HASIL']
             final_df = all_processed_data[[col for col in cols_to_keep if col in all_processed_data.columns]]
             write_to_gsheet(client, DESTINATION_SHEET_URL, "Hasil Proses Lengkap", final_df)
             
             if not missing_info_df.empty:
-                cols_to_keep_missing = ['TANGGAL', 'NAMA', 'Toko', 'Status']
+                cols_to_keep_missing = ['TANGGAL', 'NAMA', 'TOKO', 'STATUS']
                 final_missing_df = missing_info_df[[col for col in cols_to_keep_missing if col in missing_info_df.columns]]
                 write_to_gsheet(client, MISSING_INFO_SHEET_URL, "Perlu Dicek Manual", final_missing_df)
