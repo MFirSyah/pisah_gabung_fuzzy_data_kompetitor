@@ -68,12 +68,14 @@ def find_best_match(product_name, db_df, all_brands_list):
     # Langkah 2: Fuzzy Match (dengan pengaman error)
     choices = db_df['NAMA'].dropna().str.lower()
     if not choices.empty:
-        # **PERBAIKAN UTAMA DI SINI**
+        # **====================================================================**
+        # ** PERBAIKAN UTAMA PENYEBAB ERROR                     **
+        # **====================================================================**
         # Panggil extractOne dan simpan hasilnya di satu variabel dulu.
         result = process.extractOne(product_name_lower, choices, scorer=fuzz.token_sort_ratio)
         
-        # Hanya bongkar (unpack) jika hasilnya tidak None.
-        if result:
+        # Hanya bongkar (unpack) jika hasilnya TIDAK None.
+        if result is not None:
             match, score = result
             if score >= 90:
                 matched_row = db_df[db_df['NAMA'].str.lower() == match]
