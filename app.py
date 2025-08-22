@@ -7,7 +7,6 @@ import warnings
 from thefuzz import process, fuzz
 import re
 import time
-import numpy as np
 
 warnings.filterwarnings('ignore', category=UserWarning, module='gspread_dataframe')
 
@@ -63,14 +62,12 @@ def load_all_data(_client, _status_container):
         st.error(f"Gagal memuat data: {e}")
         return None, None, None, None
 
-# --- FUNGSI DETEKSI CANGGIHAN (TIDAK PERLU DIUBAH) ---
-def find_best_match(product_name, db_df, all_brands_list):
+# --- FUNGSI DETEKSI FUZZY (HANYA UNTUK SISA DATA PALING AKHIR) ---
+def find_best_match_fuzzy_only(product_name, db_df):
     if not isinstance(product_name, str) or not product_name.strip():
         return None, None
     product_name_lower = product_name.lower().strip()
-    direct_match = db_df[db_df['NAMA'].str.lower() == product_name_lower]
-    if not direct_match.empty:
-        return direct_match.iloc[0]['Brand'], direct_match.iloc[0]['Kategori']
+    
     choices = db_df['NAMA'].dropna().str.lower()
     if not choices.empty:
         result = process.extractOne(product_name_lower, choices, scorer=fuzz.token_sort_ratio)
@@ -80,13 +77,11 @@ def find_best_match(product_name, db_df, all_brands_list):
                 matched_row = db_df[db_df['NAMA'].str.lower() == match]
                 if not matched_row.empty:
                     return matched_row.iloc[0]['Brand'], matched_row.iloc[0]['Kategori']
-    for brand in all_brands_list:
-        if re.search(r'\b' + re.escape(brand.lower()) + r'\b', product_name_lower):
-            return brand.upper(), None
     return None, None
 
 # --- Fungsi untuk Menulis Data ke Google Sheet ---
 def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
+    # (Fungsi ini tidak perlu diubah)
     try:
         spreadsheet = client.open_by_url(sheet_url)
         worksheet = spreadsheet.worksheet(worksheet_name)
@@ -97,8 +92,8 @@ def write_to_gsheet(client, sheet_url, worksheet_name, df_to_write):
         st.error(f"Gagal menulis data ke sheet '{worksheet_name}': {e}")
 
 # --- Tampilan Aplikasi Streamlit ---
-st.set_page_config(page_title="Automasi Pelabelan Efisien", layout="wide")
-st.title("🚀 Automasi Pelabelan Brand dan Kategori (Versi Efisien)")
+st.set_page_config(page_title="Automasi Pelabelan Super Efisien", layout="wide")
+st.title("🚀 Automasi Pelabelan Brand dan Kategori (Versi Super Efisien)")
 st.info("Aplikasi ini menggunakan metode pemrosesan yang dioptimalkan untuk menangani data dalam jumlah besar dengan cepat.")
 
 if st.button("Mulai Proses Pelabelan", type="primary"):
@@ -119,45 +114,47 @@ if st.button("Mulai Proses Pelabelan", type="primary"):
             all_brands_list = db_brand_df.iloc[:, 0].dropna().str.strip().unique().tolist()
             kamus_dict = dict(zip(kamus_df['Alias'], kamus_df['Brand_Utama']))
             
-            status.write("🧹 Membersihkan brand awal menggunakan `kamus_brand`...")
+            # --- LANGKAH EFISIEN 1: Pembersihan Awal ---
+            status.write("🧹 1/5: Membersihkan brand awal menggunakan `kamus_brand`...")
             data_toko['BRAND_CLEANED'] = data_toko.get('BRAND', pd.Series(dtype='str')).astype(str).str.strip().replace(kamus_dict)
             
-            # --- PERUBAHAN UTAMA: PROSES DALAM CHUNKS ---
-            chunk_size = 5000
-            processed_chunks = []
-            progress_bar = st.progress(0, text="Memulai proses pelabelan per potongan...")
-            preview_placeholder = st.empty()
+            # --- LANGKAH EFISIEN 2: Pencocokan Langsung via Merge ---
+            status.write(f"⚡ 2/5: Melakukan pencocokan langsung pada {len(data_toko)} baris...")
+            db_subset = db_df[['NAMA', 'Brand', 'Kategori']].rename(columns={'Brand': 'BRAND_DB', 'Kategori': 'KATEGORI_DB'})
+            processed_data = pd.merge(data_toko, db_subset, on='NAMA', how='left')
+            
+            # --- LANGKAH EFISIEN 3: Pencarian Keyword via Regex ---
+            remaining_mask = processed_data['BRAND_DB'].isna()
+            remaining_count = remaining_mask.sum()
+            status.write(f"🎯 3/5: Mencari keyword brand pada sisa {remaining_count} baris...")
+            if remaining_count > 0 and all_brands_list:
+                # Buat satu pola regex besar: \b(brand1|brand2|...)\b
+                regex_pattern = r'\b(' + '|'.join(re.escape(brand) for brand in all_brands_list) + r')\b'
+                # Ekstrak brand yang cocok dalam satu kali jalan
+                keyword_brands = processed_data.loc[remaining_mask, 'NAMA'].str.extract(regex_pattern, flags=re.IGNORECASE)[0]
+                # Isi hasil ke kolom BRAND_DB
+                processed_data.loc[remaining_mask, 'BRAND_DB'] = keyword_brands.str.upper()
 
-            for i, chunk in enumerate(np.array_split(data_toko, len(data_toko) // chunk_size)):
-                
-                # Update progress text
-                start_row = i * chunk_size
-                end_row = start_row + len(chunk) - 1
-                progress_text = f"Memproses baris {start_row} - {end_row} dari {len(data_toko)}..."
-                progress_bar.progress((i + 1) / (len(data_toko) // chunk_size), text=progress_text)
-                
-                # Terapkan deteksi pada chunk
-                results = chunk.apply(
-                    lambda row: find_best_match(row.get('NAMA', ''), db_df, all_brands_list),
+            # --- LANGKAH EFISIEN 4: Pencocokan Fuzzy (Pilihan Terakhir) ---
+            remaining_mask = processed_data['BRAND_DB'].isna()
+            remaining_count = remaining_mask.sum()
+            status.write(f"🧠 4/5: Melakukan pencocokan fuzzy pada sisa {remaining_count} baris terakhir...")
+            if remaining_count > 0:
+                fuzzy_results = processed_data[remaining_mask].apply(
+                    lambda row: find_best_match_fuzzy_only(row.get('NAMA', ''), db_df),
                     axis=1,
                     result_type='expand'
                 )
-                
-                chunk['BRAND_HASIL'] = results[0].fillna(chunk['BRAND_CLEANED'])
-                chunk['KATEGORI_HASIL'] = results[1]
-                
-                # Tampilkan preview dari chunk yang baru diproses
-                with preview_placeholder.container():
-                    st.write("**Pratinjau Hasil Proses Terakhir:**")
-                    st.dataframe(chunk[['NAMA', 'BRAND', 'BRAND_HASIL', 'KATEGORI_HASIL']].head())
+                if not fuzzy_results.empty:
+                    processed_data.loc[remaining_mask, 'BRAND_DB'] = fuzzy_results[0]
+                    processed_data.loc[remaining_mask, 'KATEGORI_DB'] = fuzzy_results[1]
 
-                processed_chunks.append(chunk)
+            # --- LANGKAH EFISIEN 5: Finalisasi ---
+            status.write("🧩 5/5: Menggabungkan semua hasil pelabelan...")
+            processed_data['BRAND_HASIL'] = processed_data['BRAND_DB'].fillna(processed_data['BRAND_CLEANED'])
+            processed_data['KATEGORI_HASIL'] = processed_data['KATEGORI_DB']
 
-            progress_bar.empty()
-            preview_placeholder.empty()
-
-            status.write("🧩 Menggabungkan semua hasil pelabelan...")
-            all_processed_data = pd.concat(processed_chunks, ignore_index=True)
+            all_processed_data = processed_data
             missing_info_df = all_processed_data[all_processed_data['BRAND_HASIL'].isna() | all_processed_data['KATEGORI_HASIL'].isna()].copy()
             status.update(label="✅ Pelabelan Selesai!", state="complete", expanded=False)
 
